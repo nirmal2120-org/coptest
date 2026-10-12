@@ -1,0 +1,9 @@
+capture:
+  files:
+    exclude-regex: '(^|/)(_deps|usr|test|recipe-sysroot)(/|$)'
+analyze:
+  cov-analyze-args:
+    - '--concurrency'
+    - '--security'
+    - '--enable'
+    - 'HARDCODED_CREDENTIALS'

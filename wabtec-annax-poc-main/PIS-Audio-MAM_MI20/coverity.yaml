@@ -1,0 +1,11 @@
+capture:
+  files:
+    exclude-regex: 'node_modules|bower_components|vendor'
+analyze:
+  cov-analyze-args:
+    - '--aggressiveness-level'
+    - 'low'
+    - '--all'
+    - '--concurrency'
+    - '--security'
+    - '--enable-audit-mode'

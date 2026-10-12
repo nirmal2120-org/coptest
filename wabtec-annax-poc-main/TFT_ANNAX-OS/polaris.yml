@@ -1,0 +1,30 @@
+# Polaris configuration file for ANNAX Yocto projects
+version: "1"
+project:
+  name: ${scm.git.repo}
+  branch: ${scm.git.branch}
+  revision:
+    name: ${scm.git.commit}
+    date: ${scm.git.commit.date}
+capture:
+  coverity:
+    skipFiles:
+      - "_deps"
+      - "/usr"
+      - "test"
+      - ".*/recipe-sysroot/.*"
+    idirCapture:
+      idirPath: "build_dir/tmp/annax_images/cov-analysis/idir"
+analyze:
+  mode: central
+  coverity:
+    cov-analyze:
+    - "--concurrency"
+    - "--security"
+    - "--enable" 
+    - "HARDCODED_CREDENTIALS"  
+    # See more about Wabtec checkers policy: https://prod-sec.pages.corp.wabtec.com/prodsecservices/Polaris/CheckerConfig
+install:
+  coverity:
+    version: default
+serverUrl: https://wabtec.cop.blackduck.com/

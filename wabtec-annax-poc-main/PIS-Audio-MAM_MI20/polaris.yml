@@ -1,0 +1,62 @@
+version: "1"
+
+project:
+  organization: wabtec
+  name: PIS-Audio-MAM_MI20
+  branch: ${env.CI_COMMIT_REF_NAME}
+  revision:
+    name: ${env.CI_COMMIT_SHA}
+    date: ${env.CI_COMMIT_TIMESTAMP}
+  projectDir: /builds/annax/pis/ofris/projects/481049.Alstom_X0183_MI20/414343.ACU_Alstom_MI20
+  captureDir: /tmp/cov-int
+
+capture:
+  coverity:
+    idirCapture:
+      idirPath: /tmp/cov-int
+  fileSystem:
+    ears:
+      extensions: [ear]
+      files:
+      - directory: .
+    java:
+      files:
+      - directory: .
+    javascript:
+      files:
+      - directory: .
+      - excludeRegex: node_modules|bower_components|vendor
+    php:
+      files:
+      - directory: .
+    python:
+      files:
+      - directory: .
+    ruby:
+      files:
+      - directory: .
+    typescript:
+      files:
+      - directory: .
+    wars:
+      extensions: [war]
+      files:
+      - directory: .
+
+analyze:
+  mode: central
+  coverity:
+    caching:
+      dlls: disable
+      jars: enable
+      pfi: enable
+      rws: disable
+      tu-caching: disable
+    cov-analyze: ["--aggressiveness-level", "low", "--all", "--concurrency", "--security", "--enable-audit-mode"]
+    usebudaforjavadotnet: disable
+
+install:
+  coverity:
+          version: default
+
+serverUrl: https://wabtec.cop.blackduck.com

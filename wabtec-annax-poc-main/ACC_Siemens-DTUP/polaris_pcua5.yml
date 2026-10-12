@@ -1,0 +1,24 @@
+version: "1"
+project:
+  name:  ACC_Siemens-DTUP 
+  branch: ${env.CI_COMMIT_REF_NAME}
+  revision:
+    name: ${env.CI_COMMIT_SHA}
+    date: ${env.CI_COMMIT_TIMESTAMP}
+    captureDir:
+    projectDir: "/home/user"
+capture:
+  skipFiles:
+      - "^(\\/opt\\/).*$"
+  coverity:
+    idirCapture:
+      idirPath: /home/user/idir_PCUA5
+    build_command: cov-build --dir /home/user/idir_PCUA5 make -sj$(nproc)
+analyze:
+  mode: central
+  coverity:
+            cov-analyze: ["--aggressiveness-level", "low", "--all", "--concurrency", "--security", "--android-security", "--webapp-security", "--webapp-security-aggressiveness-level", "high", "--distrust-all", "--enable-audit-mode"]
+install:
+  coverity:
+          version: 2025.6.2
+serverUrl: https://wabtec.cop.blackduck.com/

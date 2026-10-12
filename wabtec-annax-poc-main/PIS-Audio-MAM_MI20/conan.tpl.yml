@@ -1,0 +1,409 @@
+variables:
+  CONAN_UPLOAD_REMOTE: wt-artifactory
+  CONAN_CI_REF: master
+  CONAN_CONFIG_REF: master
+  CONAN_BUILD_RUNNER_TAG: latest
+  CONAN_UPLOAD_BRANCH:
+    value: $CI_DEFAULT_BRANCH
+    description: the branch name for which conan packages are published. usually the repo default branch
+  CONAN_PIS_CI_IMAGE:
+    value: ${CI_REGISTRY}/annax/pis/devops_group/cicd/docker/builders/conan-ci:latest
+    # by adding this to the end (after 'latest') of the previous line we can 'pin' a specific build of the container
+    description: "the container image to use for conan build jobs"
+  SDK_CLEAN:
+    value: "false"
+    description: remove and redownload sdk (conan)
+    options:
+      - "true"
+      - "false"
+
+.conan_generate_jobs_ci:
+  extends: .conan_build_base
+  variables:
+    CONAN_CHANNEL: ci
+  script:
+    - !reference [.conan_generate_jobs_channel, script]
+    - if [ -n "$(git status --porcelain)" ]; then git status; fi
+    - conan cache save '*' --file artifacts/conan_artifacts.tgz
+
+.conan_generate_jobs_beta:
+  extends: .conan_build_base
+  variables:
+    CONAN_CHANNEL: beta
+  script:
+    - !reference [.conan_generate_jobs_channel, script]
+    - if [ -n "$(git status --porcelain)" ]; then git status; fi
+    - conan cache save '*' --file artifacts/conan_artifacts.tgz
+
+.conan_generate_jobs_channel:
+  script: # needs $CONAN_CHANNEL
+    - export GITLAB_CI_YAML_FILE="artifacts/conan_jobs_${CONAN_CHANNEL}.yaml"
+    - |
+      (
+        set -ex
+        pkg_name="$(conan inspect -fjson "$conan_file" | jq -r .name)"
+        if [ -f env/3.build.env ]; then
+          echo "Project env 'env/3.build.env' found. only generating jobs from project settings"
+          conan pis:graph cijobs --online \
+            --recipe-dir "$conan_file" \
+            --channel "$CONAN_CHANNEL" \
+            --add "$GITLAB_CI_YAML_FILE" \
+            --output "$GITLAB_CI_YAML_FILE" \
+            --lockfile-out "artifacts/conan_$CONAN_CHANNEL.lock.json"
+          conan pis:graph info -fhtml --online \
+            --recipe-dir "$conan_file" \
+            --channel "$CONAN_CHANNEL" > "artifacts/conan_graph_info_$ENV_DIR_$CONAN_CHANNEL.html"
+        else
+
+          # skip commented packages and
+          # convert lists from newlines to comma-separated
+          conan_pcu_packages="$(sed -e 's/^\s*#.*//g' | sed ':a;N;$!ba;s/\s\+/,/g' <<< "$conan_pcu_packages")"
+          conan_uap_packages="$(sed -e 's/^\s*#.*//g' | sed ':a;N;$!ba;s/\s\+/,/g' <<< "$conan_uap_packages")"
+          conan_acu_ignore_packages="$(sed -e 's/^\s*#.*//g' | sed ':a;N;$!ba;s/\s\+/,/g' <<< "$conan_acu_ignore_packages")"
+          conan_native_packages="$(sed -e 's/^\s*#.*//g' | sed ':a;N;$!ba;s/\s\+/,/g' <<< "$conan_native_packages")"
+          for ENV_DIR in $(ls /opt/gitlab-ci-env/); do
+            ENV_DIR_FULL="/opt/gitlab-ci-env/$ENV_DIR"
+            ENV_DIR_CHANNEL="${ENV_DIR}_${CONAN_CHANNEL}"
+            if [ "$ENV_DIR" = "PCU" ] && [[ ",$conan_pcu_packages," != *",$pkg_name,"* ]]; then
+              echo "Skipping $ENV_DIR build since Package is not enabled: $pkg_name"
+              echo "Enabled Packages: $conan_pcu_packages"
+              continue
+            fi
+            if [ "$ENV_DIR" = "ACC_RC" ] && [[ ",$conan_uap_packages," != *",$pkg_name,"* ]]; then
+              echo "Skipping $ENV_DIR build since Package is not enabled: $pkg_name"
+              echo "Enabled Packages: $conan_uap_packages"
+              continue
+            elif [ "$ENV_DIR" = "UAP" ] && [[ ",$conan_uap_packages," != *",$pkg_name,"* ]]; then
+              echo "Skipping $ENV_DIR build since Package is not enabled: $pkg_name"
+              echo "Enabled Packages: $conan_uap_packages"
+              continue
+            fi
+            if [ "$ENV_DIR" = "ACU" ] && [[ ",$conan_acu_ignore_packages," == *",$pkg_name,"* ]]; then
+              echo "Skipping $ENV_DIR build since Package is ignored: $pkg_name"
+              echo "Ignored Packages: $conan_acu_ignore_packages"
+              continue
+            fi
+            if [ "$ENV_DIR" = "native" ] && [[ ",$conan_native_packages," != *",$pkg_name,"* ]]; then
+              echo "Skipping $ENV_DIR build since Package is not enabled: $pkg_name"
+              echo "Enabled Packages: $conan_native_packages"
+              continue
+            fi
+            echo "Adding CI jobs for env: $ENV_DIR - channel: $CONAN_CHANNEL"
+            conan pis:config sdk -p "$ENV_DIR_FULL" --branch "$CONAN_CONFIG_REF" --url "$CONAN_CONFIG_URL"
+            conan pis:graph cijobs --online \
+              --recipe-dir "$conan_file" \
+              -p "$ENV_DIR_FULL" \
+              --channel "$CONAN_CHANNEL" \
+              --add "$GITLAB_CI_YAML_FILE" \
+              --output "$GITLAB_CI_YAML_FILE" \
+              --lockfile-out "artifacts/conan_${ENV_DIR_CHANNEL}.lock.json" \
+              --config-name "$ENV_DIR"
+            conan pis:graph info -fhtml --online \
+              --recipe-dir "$conan_file" \
+              -p "$ENV_DIR_FULL" \
+              --channel "$CONAN_CHANNEL" > "artifacts/conan_graph_info_${ENV_DIR_CHANNEL}.html"
+          done
+        fi
+      )
+
+.conan_build: # conan build job with toolchain installation
+  extends: .conan_build_base
+  cache:
+    - key: "annax-os-sdk-$SDK_PROJECT-$SDK_VERSION"
+      unprotect: true
+      paths:
+        - $SDK_CACHE
+  tags:
+    - $CONAN_BUILD_RUNNER_TAG
+  variables:
+    CONAN_UPLOAD: ""
+    SDK_SOURCE_FILE: "environment-setup-*"
+  before_script:
+    - !reference [.conan_build_base, before_script]
+    - |
+      if [ -n "$SDK_PROJECT" ]; then
+        conan config install -t git -a "-b $CONAN_CONFIG_REF" -sf "sdk/$SDK_PROJECT/$SDK_VERSION/" "$CONAN_CONFIG_URL"
+        yocto-sdk-ads-install.sh
+
+        echo ". /opt/toolchain/$SDK_SOURCE_FILE"
+        . /opt/toolchain/$SDK_SOURCE_FILE
+
+        echo export "PATH=/usr/bin:/usr/local/bin:$PATH"
+        export PATH="/usr/bin:/usr/local/bin:$PATH"
+
+        echo . /usr/local/bin/yocto-sdk-check.sh
+        . /usr/local/bin/yocto-sdk-check.sh
+
+        env | grep -e /opt/toolchain -e sysroot || true
+
+      fi
+  script:
+    - echo "This script should be overwritten, or replaced by .conan_generate_jobs_<channel> and .conan_build_jobs"
+    - "false"
+
+.conan_publish:
+  extends: .conan_build_base
+
+.conan_build_base: # base conan config without toolchain, gitlab internal runners
+  image:
+    name: $CONAN_PIS_CI_IMAGE
+  tags:
+    - latest
+  variables:
+    _conf_: ci
+    SDK_CACHE: "$CI_PROJECT_DIR/.cache/annax-os-sdk" # depends on runner configuration
+    conan_home: /tmp/conan_home
+    conan_user: "gitlab-ci" # conan_pass is stored in the annax/pis group as variable
+    conan_native_packages: |
+      ads_build_tools
+      ads-trainit-framework
+      commissioning-apiserver
+      libsqlite
+      ofriscommon
+      paramconverter
+      pyofris
+      recipebase
+      supervisordservices
+      systemdservices
+      updatemanager-apiserver
+
+    conan_pcu_packages: |
+      dhcpctl
+      gtest
+      libcurlpp
+      libftp
+      libjimtcl
+      libjson
+      libjsonabstraction
+      libjsonrpccpp
+      libmqttclient
+      libmqttobjectlayer
+      librpcdefinitions
+      libsqlite
+      libsst
+      libvoip
+      libzip
+      netsnmp
+      ofris
+      ofriscommon
+      oselibrary
+      paho-mqtt-c
+      paramconverter
+      prodparrot
+      voipserver
+
+    conan_uap_packages: |
+      auracastservice
+      dhcpctl
+      gtest
+      libcurlpp
+      libftp
+      libjimtcl
+      libjson
+      libjsonabstraction
+      libjsonrpccpp
+      libmqttclient
+      libmqttobjectlayer
+      librpcdefinitions
+      libsqlite
+      libsst
+      libvoip
+      libzip
+      netsnmp
+      ofris
+      ofriscommon
+      oselibrary
+      paho-mqtt-c
+      paramconverter
+      prodparrot
+      voipserver
+
+    conan_acu_ignore_packages: |
+      auracastservice
+      ads_build_tools
+      ads-trainit-framework
+      commissioning-apiserver
+      pyofris
+      recipebase
+      supervisordservices
+      systemdservices
+      updatemanager-apiserver
+
+  artifacts:
+    paths:
+      - env/.env
+      - artifacts
+    when: always
+  before_script:
+    - conan version
+    - "time git fetch --prune --unshallow --tags || true"
+    - "time git fetch --prune-tags || true"
+    - '[ -n "$conan_file" ] && export conan_extra_args="$conan_extra_args --recipe-dir $conan_file"'
+    - git config --system core.excludesfile /etc/gitignore
+    - git config --system "url.${CI_SERVER_PROTOCOL}://gitlab-ci-token:$CI_JOB_TOKEN@$CI_SERVER_HOST.insteadof" "${CI_SERVER_PROTOCOL}://$CI_SERVER_HOST"
+    - echo "/.cache" >> /etc/gitignore
+    - echo "/artifacts" >> /etc/gitignore
+    - echo "/.conan_home" >> /etc/gitignore
+    - export CONAN_HOME="$conan_home"
+    - export CONAN_CONFIG_URL="${CI_SERVER_PROTOCOL}://${CI_SERVER_HOST}/annax/pis/devops_group/conan/conan-config.git"
+    - conan config install -t git -a "-b $CONAN_CONFIG_REF" "$CONAN_CONFIG_URL"
+    - conan pis:config remotes
+    - |
+      if [ -f env/3.build.env ]; then
+        echo "Project env 'env/3.build.env' found. installing sdk profiles"
+        conan pis:config sdk --branch "$CONAN_CONFIG_REF" --url "$CONAN_CONFIG_URL"
+      fi
+    - CONAN_PASSWORD_WT_ARTIFACTORY="${WT_ARTIFACTORY_AUTH#*:}" conan remote login "$CONAN_UPLOAD_REMOTE" "${WT_ARTIFACTORY_AUTH%:*}" -p
+    - mkdir -p "$conan_home" ".cache" "artifacts"
+    - |
+      ls -l artifacts/conan*.tgz && (
+        for conan_pkg_tar in artifacts/conan*.tgz; do
+          conan cache restore "$conan_pkg_tar"
+        done
+      ) || echo 'NO CONAN CACHE ARTIFACTS FOUND!'
+    - "rm -f artifacts/conan*"
+    - '[ -z "$conan_file" ] && export conan_file=conan_recipe'
+    - |
+      echo "Checking for CONAN_UPLOAD"
+      if [ -z "$CONAN_UPLOAD" ]; then
+        export CONAN_UPLOAD="false"
+        if [ "$CI_COMMIT_BRANCH" = "$CONAN_UPLOAD_BRANCH" ]; then
+          echo "Upload enabled for branch: $CONAN_UPLOAD_BRANCH"
+          export CONAN_UPLOAD="true"
+        elif [[ "$CI_COMMIT_BRANCH" =~ ^feature/ci-* ]]; then
+          echo "Upload enabled for ci feature branch: $CI_COMMIT_BRANCH"
+          export CONAN_UPLOAD="true"
+        elif [ -n "$CI_COMMIT_TAG" ]; then
+          echo "Upload enabled for tag: $CI_COMMIT_TAG"
+          export CONAN_UPLOAD="true"
+        else
+          echo "Upload disabled"
+        fi
+      else
+        echo "CONAN_UPLOAD: $CONAN_UPLOAD"
+      fi
+
+.conan_deploy_appfs:
+  extends: .conan_build_base
+  variables:
+    CONAN_CHANNEL: ci
+  artifacts:
+    paths:
+      - artifacts
+  script:
+    - echo "/$CONAN_APPFS_DIR"    >> /etc/gitignore
+    - echo "/$CONAN_LICENSES_DIR" >> /etc/gitignore
+    - rm -f "$CONAN_APPFS_DIR" "$CONAN_LICENSES_DIR"
+    - mkdir -p "$CONAN_APPFS_DIR" "$CONAN_LICENSES_DIR"
+    - |
+      if [ ! -f env/3.build.env ]; then
+        echo "Project env/3.build.env not found. exit with error!"
+        exit 1
+      fi
+    - conan pis:deploy --deploy deploy-afp --channel "$CONAN_CHANNEL" --output-folder "$CONAN_APPFS_DIR"
+    - rm -f "$CONAN_APPFS_DIR"/*.sh
+    - conan pis:deploy --deploy licenses --channel "$CONAN_CHANNEL" --output-folder "$CONAN_LICENSES_DIR" || echo "ERROR deploying licenses..."
+    - rm -f "$CONAN_LICENSES_DIR"/*.sh
+
+.conan_generated_build_job:
+  extends: .conan_build
+  script:
+    - 'echo "nproc: $(nproc)"'
+    - |
+      if [ "$CONAN_LOCKFILE_BASE64" != "" ]; then
+          echo "$CONAN_LOCKFILE_BASE64" | base64 -d > .cache/conan_lockfile.json
+          GRAPH_ARGS="$GRAPH_ARGS --lockfile-partial --lockfile .cache/conan_lockfile.json"
+      fi
+    - conan graph info -fhtml "--requires=$CONAN_PKG_REF" $GRAPH_ARGS > artifacts/conan_graph_info.html
+    - conan graph info -fjson "--requires=$CONAN_PKG_REF" $GRAPH_ARGS > artifacts/conan_graph_info.json
+    - git status
+    - env | grep -e /opt/toolchain -e sysroot || true
+    - conan install "--requires=$CONAN_PKG_REF" "--build=$CONAN_PKG_REF" $GRAPH_ARGS $CONAN_OPTIONS
+    - if [ "$CONAN_UPLOAD" = "true" ]; then conan upload -r "$CONAN_UPLOAD_REMOTE" "$CONAN_PKG_REF";fi;
+    - conan cache save --file "artifacts/conan_artifacts_${CI_JOB_ID}_.tgz" "$CONAN_PKG_REF:*"
+  artifacts:
+    paths:
+      - artifacts
+    expire_in: 1d
+
+.conan_polaris_sast_scan:
+  extends: .conan_build
+  variables:
+    CONAN_CHANNEL: "ci"
+    CONAN_UPLOAD: "false"
+    COVERITY_COMPILER_TYPE: "gcc" # Default compiler family for cov-configure
+    COVERITY_INTERMEDIATE_DIR: "/tmp/cov-int"
+    COVERITY_VERSION: "2025.12.2"
+    POLARIS_CONFIG_LOCATION: "external" # options: external (default), project, custom
+    POLARIS_CONFIG_NAME: "" # Config name in Polaris_POC (recommended if available)
+    POLARIS_CONFIG_PATH: "" # Custom path to polaris.yml (optional)
+    POLARIS_CONFIG_REPO: "/tmp/polaris_config"
+    POLARIS_PROJECT_NAME: "" # Must be set by extending job
+    POLARIS_SERVER_URL: "https://wabtec.cop.blackduck.com/"
+    POLARIS_VERSION_NAME: "${CI_COMMIT_REF_NAME}"
+  before_script:
+    - export SDK_PROJECT="$(. env/.env;echo "$toolchain_name")"
+    - export SDK_VERSION="$(. env/.env;echo "$toolchain_ver")"
+    - echo "${SDK_PROJECT:?}"
+    - echo "${SDK_VERSION:?}"
+    - !reference [.conan_build, before_script]
+    - apt-get update && apt-get install -y unzip
+    - echo "Creating Coverity intermediate directory at $COVERITY_INTERMEDIATE_DIR..."
+    - mkdir -p "$COVERITY_INTERMEDIATE_DIR"
+    - echo "Downloading Coverity Analysis Tools..."
+    - 'wget --quiet --header "JOB-TOKEN: ${CI_JOB_TOKEN}" "$CI_API_V4_URL/projects/26554/packages/generic/cov-analysis/2025.12.2/cov-analysis-linux64-2025.12.2.tar.gz"'
+    - tar -xf "cov-analysis-linux64-$COVERITY_VERSION.tar.gz" -C /opt
+    - export PATH="/opt/cov-analysis-linux64-$COVERITY_VERSION/bin/:$PATH"
+    - export COV_ANALYSIS_BIN="/opt/cov-analysis-linux64-$COVERITY_VERSION/bin"
+    - |
+      if [ -n "$POLARIS_CONFIG_NAME" ] && [ "$POLARIS_CONFIG_LOCATION" = "external" ]; then
+        echo "Cloning Polaris configuration repository..."
+        git clone --branch=master "${CI_SERVER_PROTOCOL}://${CI_SERVER_HOST}/annax/pis/devops_group/cato/Polaris_POC.git" "$POLARIS_CONFIG_REPO" || echo "Warning: Could not clone Polaris config repo"
+      fi
+  script:
+    - echo "Setting up Polaris CLI..."
+    - wget --no-check-certificate "$POLARIS_SERVER_URL/api/tools/v2/downloads/polaris_cli-linux64-2026.6.0.zip"
+    - unzip -j polaris_cli-linux64-2026.6.0.zip -d /usr/local/bin
+    - chmod +x /usr/local/bin/polaris
+    - rm polaris_cli-linux64-2026.6.0.zip
+    - echo "Build command determined for mode $CONAN_BUILD_MODE"
+    - |
+      if [ -n "$COV_BUILD_CONFIG" ]; then
+        echo "Exporting Coverity config for Polaris: $COV_BUILD_CONFIG"
+        export COVERITY_BUILD_OPTIONS="$COV_BUILD_CONFIG"
+      fi
+    - |
+      POLARIS_CONFIG_FILE="$POLARIS_CONFIG_REPO/config/$POLARIS_CONFIG_NAME/polaris.yml"
+      if [ -f "$POLARIS_CONFIG_FILE" ]; then
+        echo "Using Polaris config from Polaris_POC: $POLARIS_CONFIG_FILE"
+      else
+        echo "Error: Polaris config not found at $POLARIS_CONFIG_FILE"
+        exit 1
+      fi
+    - echo "Configuring Coverity for the compiler..."
+    - cov-configure --gcc --compiler-dir /opt/toolchain/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux || cov-configure --gcc
+    - echo "Running Coverity build capture..."
+    - cov-build --dir "$COVERITY_INTERMEDIATE_DIR" conan pis:build --online --build-everything --channel "$CONAN_CHANNEL"
+    - |
+      echo "Running Polaris analysis with Coverity capture..."
+      if [ -n "$POLARIS_CONFIG_FILE" ]; then
+        echo "$POLARIS_ACCESS_TOKEN" | polaris -c "$POLARIS_CONFIG_FILE" analyze -w
+      else
+        echo "$POLARIS_ACCESS_TOKEN" | polaris analyze -w
+      fi
+    - echo "Saving build artifacts..."
+    - |
+      POLARIS_WORKDIR=$(find /root/.blackduck/polaris -name "idir" -type d 2>/dev/null | head -1)
+      if [ -n "$POLARIS_WORKDIR" ]; then
+        echo "Found Polaris intermediate directory: $POLARIS_WORKDIR"
+        cp "$POLARIS_WORKDIR/../build-log.txt" ./polaris-build-log.txt 2>/dev/null || echo "No build log found"
+        ls -la "$POLARIS_WORKDIR/../" || true
+      else
+        echo "Polaris intermediate directory not found"
+      fi
+  artifacts:
+    paths:
+      - polaris-build-log.txt
+      - "*.log"
+    when: always
+    expire_in: 7 days

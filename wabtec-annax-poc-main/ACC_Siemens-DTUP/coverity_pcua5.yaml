@@ -1,0 +1,19 @@
+capture:
+  build:
+    build-command: "make -sj$(nproc)"
+
+  files:
+    exclude-regex: '^/opt/.*'
+analyze:
+  cov-analyze-args:
+    - '--aggressiveness-level'
+    - 'low'
+    - '--all'
+    - '--concurrency'
+    - '--security'
+    - '--android-security'
+    - '--webapp-security'
+    - '--webapp-security-aggressiveness-level'
+    - 'high'
+    - '--distrust-all'
+    - '--enable-audit-mode'
